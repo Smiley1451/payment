@@ -25,10 +25,11 @@ public class PaymentController {
 
     @PostMapping("/initiate")
     public Mono<ResponseEntity<PaymentResponse>> initiatePayment(
-            @RequestHeader("Authorization") String token,
+            @RequestHeader(value = "Authorization", required = false) String token, // Token is now optional
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
             @RequestBody PaymentRequest request) {
         log.info("Received payment initiation request for job: {}", request.getJobId());
+        // We still pass the token (even if null) to the service, but the service will ignore it.
         return paymentService.initiatePayment(request, token, idempotencyKey)
                 .map(response -> ResponseEntity.status(HttpStatus.CREATED).body(response))
                 .onErrorResume(error -> {

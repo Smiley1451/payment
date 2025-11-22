@@ -11,14 +11,14 @@ import reactor.core.publisher.Mono;
 @Service
 public class PaymentProviderService {
 
-    @Value("${payment.providers.razorpay.key-id}")
-    private String razorpayKeyId;
-
-    @Value("${payment.providers.razorpay.key-secret}")
-    private String razorpayKeySecret;
-
     @Value("${payment.providers.stripe.api-key}")
     private String stripeApiKey;
+
+    @Value("${payment.providers.cashfree.app-id}")
+    private String cashfreeAppId;
+
+    @Value("${payment.providers.cashfree.secret-key}")
+    private String cashfreeSecretKey;
 
     private final WebClient webClient;
 
@@ -27,102 +27,90 @@ public class PaymentProviderService {
     }
 
     public Mono<PaymentLink> generatePaymentLink(PaymentRequest request) {
+        // Strict check: Only allow STRIPE or CASHFREE
         return switch (request.getPaymentProvider().toUpperCase()) {
-            case "RAZORPAY" -> generateRazorpayLink(request);
             case "STRIPE" -> generateStripeLink(request);
-            case "PAYTM" -> generatePaytmLink(request);
             case "CASHFREE" -> generateCashfreeLink(request);
-            default -> Mono.error(new IllegalArgumentException("Unsupported provider: " + request.getPaymentProvider()));
+            default -> Mono.error(new IllegalArgumentException("Unsupported provider: " + request.getPaymentProvider() + ". Only STRIPE and CASHFREE are supported."));
         };
     }
 
-    private Mono<PaymentLink> generateRazorpayLink(PaymentRequest request) {
-        log.info("Generating Razorpay payment link");
-        return webClient.post()
-                .uri("https://api.razorpay.com/v1/orders")
-                .header("Authorization", "Basic " + java.util.Base64.getEncoder()
-                        .encodeToString((razorpayKeyId + ":" + razorpayKeySecret).getBytes()))
-                .bodyValue(RazorpayOrderRequest.builder()
-                        .amount((request.getAmount().longValue() * 100))
-                        .currency("INR")
-                        .build())
-                .retrieve()
-                .bodyToMono(RazorpayOrderResponse.class)
-                .map(response -> PaymentLink.builder()
-                        .orderId(response.getId())
-                        .paymentUrl("https://razorpay.com/pay/" + response.getId())
-                        .provider("RAZORPAY")
-                        .build())
-                .doOnError(error -> log.error("Razorpay error: ", error));
-    }
-
+    // =================================================================================
+    // STRIPE INTEGRATION
+    // =================================================================================
     private Mono<PaymentLink> generateStripeLink(PaymentRequest request) {
-        log.info("Generating Stripe payment link");
+        log.info("Generating Stripe payment link for amount: {}", request.getAmount());
+
+        // In a real production scenario, you would make a POST request to:
+        // https://api.stripe.com/v1/checkout/sessions
+        // Headers: Authorization: Bearer <stripeApiKey>
+
+        // Simulating a successful response for functionality testing
+        String orderId = "stripe_ord_" + System.currentTimeMillis();
         return Mono.just(PaymentLink.builder()
-                .orderId("stripe_" + System.currentTimeMillis())
-                .paymentUrl("https://checkout.stripe.com/pay/" + System.currentTimeMillis())
+                .orderId(orderId)
+                .paymentUrl("https://checkout.stripe.com/pay/" + orderId + "?simulated=true")
                 .provider("STRIPE")
                 .build());
     }
 
-    private Mono<PaymentLink> generatePaytmLink(PaymentRequest request) {
-        log.info("Generating PayTM payment link");
-        return Mono.just(PaymentLink.builder()
-                .orderId("paytm_" + System.currentTimeMillis())
-                .paymentUrl("https://pguat.paytm.com/olp")
-                .provider("PAYTM")
-                .build());
-    }
-
+    // =================================================================================
+    // CASHFREE INTEGRATION
+    // =================================================================================
     private Mono<PaymentLink> generateCashfreeLink(PaymentRequest request) {
-        log.info("Generating Cashfree payment link");
+        log.info("Generating Cashfree payment link for amount: {}", request.getAmount());
+
+        // In a real production scenario, you would make a POST request to:
+        // https://sandbox.cashfree.com/pg/orders
+        // Headers: x-client-id: <cashfreeAppId>, x-client-secret: <cashfreeSecretKey>
+
+        // Simulating a successful response for functionality testing
+        String orderId = "cashfree_ord_" + System.currentTimeMillis();
         return Mono.just(PaymentLink.builder()
-                .orderId("cashfree_" + System.currentTimeMillis())
-                .paymentUrl("https://checkout.cashfree.com/pay")
+                .orderId(orderId)
+                .paymentUrl("https://sandbox.cashfree.com/pay/" + orderId + "?simulated=true")
                 .provider("CASHFREE")
                 .build());
     }
 
+    // =================================================================================
+    // VERIFICATION LOGIC
+    // =================================================================================
     public Mono<VerificationResult> verifyTransaction(String providerOrderId, String transactionId) {
         log.info("Verifying transaction with provider order: {}", providerOrderId);
-        
-        if (providerOrderId.startsWith("razorpay_")) {
-            return verifyRazorpayTransaction(providerOrderId, transactionId);
-        } else if (providerOrderId.startsWith("stripe_")) {
-            // Mock Stripe verification
-            return Mono.just(VerificationResult.builder().successful(true).transactionId(transactionId).build());
-        } else if (providerOrderId.startsWith("paytm_")) {
-            // Mock PayTM verification
-            return Mono.just(VerificationResult.builder().successful(true).transactionId(transactionId).build());
+
+        if (providerOrderId.startsWith("stripe_")) {
+            return verifyStripeTransaction(providerOrderId, transactionId);
         } else if (providerOrderId.startsWith("cashfree_")) {
-            // Mock Cashfree verification
-            return Mono.just(VerificationResult.builder().successful(true).transactionId(transactionId).build());
+            return verifyCashfreeTransaction(providerOrderId, transactionId);
         }
-        
+
         return Mono.just(VerificationResult.builder()
                 .successful(false)
-                .error("Unknown provider order id format")
+                .error("Unknown provider order id format. Expected start with 'stripe_' or 'cashfree_'")
                 .build());
     }
 
-    private Mono<VerificationResult> verifyRazorpayTransaction(String orderId, String paymentId) {
-        return webClient.get()
-                .uri("https://api.razorpay.com/v1/payments/" + paymentId)
-                .header("Authorization", "Basic " + java.util.Base64.getEncoder()
-                        .encodeToString((razorpayKeyId + ":" + razorpayKeySecret).getBytes()))
-                .retrieve()
-                .bodyToMono(RazorpayPaymentResponse.class)
-                .map(response -> VerificationResult.builder()
-                        .successful("captured".equals(response.getStatus()))
-                        .transactionId(response.getId())
-                        .build())
-                .onErrorResume(e -> Mono.just(VerificationResult.builder()
-                        .successful(false)
-                        .error(e.getMessage())
-                        .build()));
+    private Mono<VerificationResult> verifyStripeTransaction(String orderId, String transactionId) {
+        log.info("Verifying Stripe transaction. Order: {}, Txn: {}", orderId, transactionId);
+        // In production: Call https://api.stripe.com/v1/payment_intents/{id}
+        return Mono.just(VerificationResult.builder()
+                .successful(true)
+                .transactionId(transactionId)
+                .build());
+    }
+
+    private Mono<VerificationResult> verifyCashfreeTransaction(String orderId, String transactionId) {
+        log.info("Verifying Cashfree transaction. Order: {}, Txn: {}", orderId, transactionId);
+        // In production: Call https://sandbox.cashfree.com/pg/orders/{order_id}
+        return Mono.just(VerificationResult.builder()
+                .successful(true)
+                .transactionId(transactionId)
+                .build());
     }
 }
 
+// Helper DTOs for Internal Use
 @lombok.Data
 @lombok.NoArgsConstructor
 @lombok.AllArgsConstructor
@@ -141,30 +129,4 @@ class VerificationResult {
     private boolean successful;
     private String transactionId;
     private String error;
-}
-
-@lombok.Data
-@lombok.NoArgsConstructor
-@lombok.AllArgsConstructor
-@lombok.Builder
-class RazorpayOrderRequest {
-    private Long amount;
-    private String currency;
-}
-
-@lombok.Data
-@lombok.NoArgsConstructor
-@lombok.AllArgsConstructor
-@lombok.Builder
-class RazorpayOrderResponse {
-    private String id;
-}
-
-@lombok.Data
-@lombok.NoArgsConstructor
-@lombok.AllArgsConstructor
-@lombok.Builder
-class RazorpayPaymentResponse {
-    private String id;
-    private String status;
 }

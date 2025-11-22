@@ -7,6 +7,7 @@ import com.payment.entity.Payment;
 import com.payment.repository.PaymentRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -26,18 +27,18 @@ public class PaymentService {
     private final PaymentProviderService paymentProviderService;
     private final KafkaEventProducer kafkaEventProducer;
     private final JobServiceClient jobServiceClient;
-    private final JwtService jwtService;
+    // Removed JwtService dependency
     private final IdempotencyService idempotencyService;
     private final ObjectMapper objectMapper;
 
     @Autowired
     public PaymentService(PaymentRepository paymentRepository,
                           WebClient webClient,
-                          ReactiveRedisTemplate<String, String> redisTemplate,
+                          @Qualifier("reactiveRedisTemplate") ReactiveRedisTemplate<String, String> redisTemplate, // Added Qualifier to fix startup error
                           PaymentProviderService paymentProviderService,
                           KafkaEventProducer kafkaEventProducer,
                           JobServiceClient jobServiceClient,
-                          JwtService jwtService,
+                          // JwtService removed from constructor
                           IdempotencyService idempotencyService,
                           ObjectMapper objectMapper) {
         this.paymentRepository = paymentRepository;
@@ -46,7 +47,6 @@ public class PaymentService {
         this.paymentProviderService = paymentProviderService;
         this.kafkaEventProducer = kafkaEventProducer;
         this.jobServiceClient = jobServiceClient;
-        this.jwtService = jwtService;
         this.idempotencyService = idempotencyService;
         this.objectMapper = objectMapper;
     }
@@ -54,6 +54,7 @@ public class PaymentService {
     public Mono<PaymentResponse> initiatePayment(PaymentRequest request, String token, String idempotencyKey) {
         log.info("Initiating payment for job: {}, user: {}", request.getJobId(), request.getUserId());
 
+        // 1. Idempotency Check
         Mono<Void> idempotencyCheck = (idempotencyKey != null)
                 ? idempotencyService.checkIdempotency(idempotencyKey)
                 .filter(exists -> exists)
@@ -61,10 +62,9 @@ public class PaymentService {
                 .then()
                 : Mono.empty();
 
+        // 2. JWT Validation REMOVED - Proceeding directly to Job Validation
+
         return idempotencyCheck
-                .then(jwtService.validateToken(token, request.getUserId()))
-                .filter(valid -> valid)
-                .switchIfEmpty(Mono.error(new IllegalArgumentException("Invalid or unauthorized token")))
                 .then(jobServiceClient.validateJob(request.getJobId()))
                 .filter(valid -> valid)
                 .switchIfEmpty(Mono.error(new IllegalArgumentException("Job validation failed")))
@@ -148,13 +148,11 @@ public class PaymentService {
                 .switchIfEmpty(
                         paymentRepository.findById(paymentId)
                                 .flatMap(payment ->
-                                        // Correct Reactive Chain: Cache it, THEN return the value
                                         cachePaymentStatus(paymentId.toString(), payment.getStatus())
                                                 .thenReturn(payment.getStatus())
                                 )
                 );
     }
-
 
     private Mono<Void> cachePaymentStatus(String paymentId, String status) {
         return redisTemplate.opsForValue()
